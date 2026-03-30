@@ -9,6 +9,9 @@
 
 ```powershell
 .\.venv\Scripts\python.exe -m streamlit run app_streamlit_modern.py --server.port 8515
+
+# Hoặc dùng script có sẵn
+scripts\run_app_8515.bat
 ```
 
 Mở tại:
@@ -16,6 +19,12 @@ Mở tại:
 ```text
 http://localhost:8515
 ```
+
+Thiết lập môi trường và artifact:
+
+- `docs/SETUP.md`
+- `checkpoints/README.md`
+- `data/README.md`
 
 ## Tổng quan
 

@@ -666,8 +666,7 @@ python -m venv .venv
 source .venv/bin/activate  # Linux/Mac
 
 # 3. Cài đặt dependencies cần thiết
-# Repo hiện tại chưa khóa dependency bằng requirements.txt
-pip install torch torchvision opencv-python scikit-learn matplotlib pillow numpy pandas plotly streamlit
+pip install -r requirements.txt
 ```
 
 ### Chạy Giao Diện Hiện Tại (Khuyến Nghị)
@@ -675,6 +674,9 @@ pip install torch torchvision opencv-python scikit-learn matplotlib pillow numpy
 ```powershell
 # Giao diện Streamlit hiện tại
 .\.venv\Scripts\python.exe -m streamlit run app_streamlit_modern.py --server.port 8515
+
+# Hoặc dùng script có sẵn
+scripts\run_app_8515.bat
 ```
 
 Sau đó mở trình duyệt tại:
@@ -686,6 +688,7 @@ http://localhost:8515
 **Ghi chú**:
 - `app_streamlit_modern.py` là giao diện đang được dùng và đã được tối ưu lại phần hero, sidebar, thẻ metric, bảng kết quả và trải nghiệm upload ảnh.
 - Nếu lệnh `streamlit` không nhận, dùng `python -m streamlit ...` như trên để ổn định hơn trên Windows.
+- Repo không đẩy kèm dataset, checkpoint và `.venv`; xem thêm `docs/SETUP.md`, `checkpoints/README.md`, `data/README.md`.
 
 ### Chạy Giao Diện Cũ / Web Demo Tối Giản
 
