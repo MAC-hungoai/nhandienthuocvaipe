@@ -2945,42 +2945,78 @@ def create_confidence_gauge_v2(
     *,
     reference: Optional[float] = None,
 ):
-    value = float(confidence) * 100
+    value = max(0.0, min(float(confidence) * 100.0, 100.0))
+    reference_value = None if reference is None else max(0.0, min(float(reference) * 100.0, 100.0))
     indicator_config = {
         "mode": "gauge+number" + ("+delta" if reference is not None else ""),
         "value": value,
-        "number": {"suffix": "%", "font": {"size": 42}},
-        "title": {"text": title, "font": {"size": 22}},
+        "domain": {"x": [0.04, 0.96], "y": [0.0, 0.82]},
+        "number": {
+            "suffix": "%",
+            "font": {"size": 50, "color": "#17365d"},
+        },
+        "title": {"text": ""},
         "gauge": {
-            "axis": {"range": [0, 100]},
-            "bar": {"color": "#1565d8"},
+            "bgcolor": "rgba(255,255,255,0)",
+            "borderwidth": 0,
+            "axis": {
+                "range": [0, 100],
+                "tickmode": "linear",
+                "tick0": 0,
+                "dtick": 20,
+                "tickwidth": 1.1,
+                "tickcolor": "#6b87ad",
+                "tickfont": {"size": 16, "color": "#537196"},
+            },
+            "bar": {
+                "color": "#1f6dde",
+                "thickness": 0.38,
+                "line": {"color": "#1a57b4", "width": 1.4},
+            },
             "steps": [
-                {"range": [0, 50], "color": "#edf5ff"},
-                {"range": [50, 85], "color": "#dbeafe"},
-                {"range": [85, 100], "color": "#93c5fd"},
+                {"range": [0, 45], "color": "#edf5ff"},
+                {"range": [45, 75], "color": "#d9e9ff"},
+                {"range": [75, 90], "color": "#bdd8fb"},
+                {"range": [90, 100], "color": "#8bb9f5"},
             ],
             "threshold": {
                 "line": {"color": "#0f4fb4", "width": 4},
-                "thickness": 0.75,
+                "thickness": 0.82,
                 "value": 90,
             },
         },
     }
     if reference is not None:
         indicator_config["delta"] = {
-            "reference": float(reference) * 100,
+            "reference": reference_value,
             "suffix": "%",
             "valueformat": ".1f",
             "relative": False,
+            "position": "bottom",
+            "font": {"size": 17},
+            "increasing": {"color": "#16815b"},
+            "decreasing": {"color": "#ef4444"},
         }
 
     fig = go.Figure(data=[go.Indicator(**indicator_config)])
     fig.update_layout(
-        paper_bgcolor="#ffffff",
-        plot_bgcolor="#ffffff",
+        paper_bgcolor="rgba(255,255,255,0)",
+        plot_bgcolor="rgba(255,255,255,0)",
         font={"color": "#16324f"},
-        margin=dict(l=10, r=10, t=26, b=6),
-        height=270,
+        margin=dict(l=18, r=18, t=88, b=18),
+        height=320,
+        annotations=[
+            {
+                "xref": "paper",
+                "yref": "paper",
+                "x": 0.5,
+                "y": 1.06,
+                "showarrow": False,
+                "text": f"<b>{escape(title)}</b>",
+                "font": {"size": 24, "color": "#17365d"},
+                "align": "center",
+            }
+        ],
     )
     return fig
 
