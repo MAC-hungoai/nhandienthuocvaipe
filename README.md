@@ -1,5 +1,10 @@
 # VAIPE Pill Classification
 
+> Toolkit nhan dien vien thuoc dua tren dataset VAIPE, gom classifier cho anh crop tung vien,
+> detector cho anh nhieu vien, giao dien demo, va knowledge-graph reranking de cai thien ket qua.
+>
+> Tai lieu chi tiet bang tieng Viet: `README_VI.md`
+
 ## Tong quan
 
 Du an nay da duoc rut gon ve mot bai toan duy nhat:
