@@ -18,6 +18,7 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision.models import MobileNet_V3_Large_Weights, ResNet50_Weights
 from torchvision.models.detection import (
+    FasterRCNN_MobileNet_V3_Large_FPN_Weights,
     FasterRCNN_ResNet50_FPN_V2_Weights,
     fasterrcnn_mobilenet_v3_large_fpn,
     fasterrcnn_resnet50_fpn_v2,
@@ -471,12 +472,16 @@ def build_detector(
 ) -> nn.Module:
     if model_name == "fasterrcnn_mobilenet_v3_large_fpn":
         builder = fasterrcnn_mobilenet_v3_large_fpn
-        detection_weights = FasterRCNN_MobileNet_V3_Large_FPN_Weights.DEFAULT
-        backbone_weights = MobileNet_V3_Large_Weights.DEFAULT
+        detection_weights = (
+            FasterRCNN_MobileNet_V3_Large_FPN_Weights.DEFAULT
+            if pretrained_backbone
+            else None
+        )
+        backbone_weights = MobileNet_V3_Large_Weights.DEFAULT if pretrained_backbone else None
     elif model_name == "fasterrcnn_resnet50_fpn_v2":
         builder = fasterrcnn_resnet50_fpn_v2
-        detection_weights = FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT
-        backbone_weights = ResNet50_Weights.DEFAULT
+        detection_weights = FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT if pretrained_backbone else None
+        backbone_weights = ResNet50_Weights.DEFAULT if pretrained_backbone else None
     else:
         raise ValueError(f"Unsupported detector: {model_name}")
 

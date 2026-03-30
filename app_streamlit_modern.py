@@ -140,6 +140,8 @@ if 'last_prediction' not in st.session_state:
     st.session_state.last_prediction = None
 
 DEFAULT_STREAMLIT_OUTPUT_DIR = Path("outputs") / "streamlit_runs"
+MODEL_BUNDLE_CACHE_VERSION = "detector-import-fix-v1"
+RUNTIME_SETUP_HINT = "Xem docs/SETUP.md và checkpoints/README.md để chuẩn bị đúng dependency và artifact."
 
 # ============================================================================
 # CUSTOM CSS - GIAO DIỆN HIỆN ĐẠI + DỄ ĐỌC
@@ -2516,34 +2518,49 @@ def load_models_legacy():
 
 
 @st.cache_resource
-def load_models():
+def _load_models_cached(cache_version: str):
     """Load detector + classifier bundle đúng cho ảnh nhiều viên thuốc."""
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    _ = cache_version
+
+    if not DEFAULT_DEMO_CLASSIFIER_CHECKPOINT.exists():
+        raise FileNotFoundError(
+            "Thiếu classifier checkpoint mặc định: "
+            f"{DEFAULT_DEMO_CLASSIFIER_CHECKPOINT}. {RUNTIME_SETUP_HINT}"
+        )
+
+    classifier_model, classifier_checkpoint, _, classifier_idx_to_class = load_classifier_checkpoint(
+        DEFAULT_DEMO_CLASSIFIER_CHECKPOINT,
+        device,
+    )
+
+    knowledge_graph = None
+    confusion_metrics_path = DEFAULT_DEMO_CLASSIFIER_CHECKPOINT.parent / "test_metrics.json"
+    if not confusion_metrics_path.exists():
+        confusion_metrics_path = None
+
+    if DEFAULT_KNOWLEDGE_GRAPH_PATH.exists() or DEFAULT_KNOWLEDGE_GRAPH_CACHE_DIR.exists():
+        try:
+            knowledge_graph = load_or_build_knowledge_graph(
+                artifact_path=DEFAULT_KNOWLEDGE_GRAPH_PATH,
+                cache_dir=DEFAULT_KNOWLEDGE_GRAPH_CACHE_DIR,
+                image_size=int(classifier_checkpoint["image_size"]),
+                color_bins=int(classifier_checkpoint.get("color_bins", 8)),
+                confusion_metrics_path=confusion_metrics_path,
+                rebuild=False,
+            )
+        except Exception as graph_error:
+            st.info(
+                "ℹ️ Không load được knowledge graph, app sẽ chạy detector + classifier không reranking. "
+                f"Chi tiết: {graph_error}"
+            )
 
     try:
         detector_model, detector_checkpoint, _, detector_index_to_label = load_detection_checkpoint(
             DEFAULT_DEMO_DETECTOR_CHECKPOINT,
             device,
         )
-        classifier_model, classifier_checkpoint, _, classifier_idx_to_class = load_classifier_checkpoint(
-            DEFAULT_DEMO_CLASSIFIER_CHECKPOINT,
-            device,
-        )
-
-        confusion_metrics_path = DEFAULT_DEMO_CLASSIFIER_CHECKPOINT.parent / "test_metrics.json"
-        if not confusion_metrics_path.exists():
-            confusion_metrics_path = None
-
-        knowledge_graph = load_or_build_knowledge_graph(
-            artifact_path=DEFAULT_KNOWLEDGE_GRAPH_PATH,
-            cache_dir=DEFAULT_KNOWLEDGE_GRAPH_CACHE_DIR,
-            image_size=int(classifier_checkpoint["image_size"]),
-            color_bins=int(classifier_checkpoint.get("color_bins", 8)),
-            confusion_metrics_path=confusion_metrics_path,
-            rebuild=False,
-        )
-
         return {
             "mode": "multi_pill_detection",
             "device": device,
@@ -2559,13 +2576,9 @@ def load_models():
         }
 
     except Exception as detection_error:
-        classifier_model, classifier_checkpoint, _, classifier_idx_to_class = load_classifier_checkpoint(
-            DEFAULT_DEMO_CLASSIFIER_CHECKPOINT,
-            device,
-        )
         st.warning(
             "⚠️ Không load được detector nhiều viên, app sẽ fallback sang classifier một-crop. "
-            f"Chi tiết: {detection_error}"
+            f"Chi tiết: {detection_error}. {RUNTIME_SETUP_HINT}"
         )
         return {
             "mode": "single_crop_classifier",
@@ -2574,7 +2587,13 @@ def load_models():
             "classifier_checkpoint": classifier_checkpoint,
             "classifier_idx_to_class": classifier_idx_to_class,
             "label_display_names": build_label_display_names(),
+            "knowledge_graph": knowledge_graph,
         }
+
+
+def load_models():
+    """Wrapper để có thể chủ động đổi cache key khi model bundle thay đổi."""
+    return _load_models_cached(MODEL_BUNDLE_CACHE_VERSION)
 
 
 def process_image(image_array: np.ndarray) -> np.ndarray:
