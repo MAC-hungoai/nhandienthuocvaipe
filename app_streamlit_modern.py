@@ -2146,6 +2146,8 @@ st.markdown("""
     --ui-sidebar-width: 324px;
     --ui-radius-card: 20px;
     --ui-shadow-soft: 0 16px 34px rgba(37, 94, 154, 0.10);
+    --ui-sidebar-ink: #0f2338;
+    --ui-sidebar-ink-soft: #3f5a74;
 }
 
 .block-container {
@@ -2174,11 +2176,17 @@ body[data-sidebar-state="expanded"] [data-testid="stSidebar"] > div:first-child,
     scrollbar-width: thin !important;
 }
 
+[data-testid="stSidebar"] * {
+    color: var(--ui-sidebar-ink) !important;
+    text-shadow: none !important;
+}
+
 [data-testid="stSidebar"] h3 {
     margin: 0 0 10px 0 !important;
     font-size: 15px !important;
     line-height: 1.3 !important;
     letter-spacing: -0.01em !important;
+    color: var(--ui-sidebar-ink) !important;
 }
 
 [data-testid="stSidebar"] .stCaption,
@@ -2186,6 +2194,17 @@ body[data-sidebar-state="expanded"] [data-testid="stSidebar"] > div:first-child,
     font-size: 13px !important;
     line-height: 1.55 !important;
     opacity: 0.92 !important;
+    color: var(--ui-sidebar-ink-soft) !important;
+}
+
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"],
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] li,
+[data-testid="stSidebar"] [data-baseweb="slider"] span,
+[data-testid="stSidebar"] .stToggle label,
+[data-testid="stSidebar"] .stCheckbox label {
+    color: var(--ui-sidebar-ink) !important;
 }
 
 .sidebar-stack {
@@ -2195,8 +2214,8 @@ body[data-sidebar-state="expanded"] [data-testid="stSidebar"] > div:first-child,
 .sidebar-card-min {
     padding: 14px 14px 12px !important;
     border-radius: 18px !important;
-    background: rgba(255, 255, 255, 0.12) !important;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14) !important;
+    background: rgba(255, 255, 255, 0.16) !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.20) !important;
 }
 
 .sidebar-title {
@@ -2204,6 +2223,7 @@ body[data-sidebar-state="expanded"] [data-testid="stSidebar"] > div:first-child,
     font-weight: 800 !important;
     letter-spacing: 0.08em !important;
     text-transform: uppercase !important;
+    color: var(--ui-sidebar-ink) !important;
 }
 
 .sidebar-row {
@@ -2214,12 +2234,14 @@ body[data-sidebar-state="expanded"] [data-testid="stSidebar"] > div:first-child,
 .sidebar-label {
     font-size: 12px !important;
     opacity: 0.86 !important;
+    color: var(--ui-sidebar-ink-soft) !important;
 }
 
 .sidebar-value,
 .sidebar-value.compact {
     font-size: 14px !important;
     line-height: 1.35 !important;
+    color: var(--ui-sidebar-ink) !important;
 }
 
 .sidebar-inline-badge,
@@ -2227,6 +2249,25 @@ body[data-sidebar-state="expanded"] [data-testid="stSidebar"] > div:first-child,
     padding: 6px 9px !important;
     font-size: 11.5px !important;
     font-weight: 800 !important;
+    color: #ffffff !important;
+}
+
+.sidebar-badge {
+    background: rgba(22, 64, 126, 0.16) !important;
+    border: 1px solid rgba(22, 64, 126, 0.14) !important;
+}
+
+.sidebar-inline-badge:not(.ready) {
+    background: rgba(18, 59, 117, 0.18) !important;
+    border-color: rgba(18, 59, 117, 0.16) !important;
+}
+
+[data-testid="stSidebar"] [data-baseweb="slider"] [role="slider"] {
+    box-shadow: 0 0 0 6px rgba(15, 35, 56, 0.12) !important;
+}
+
+[data-testid="stSidebar"] svg {
+    color: var(--ui-sidebar-ink-soft) !important;
 }
 
 .hero-panel {
