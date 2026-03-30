@@ -672,15 +672,15 @@ pip install torch torchvision opencv-python scikit-learn matplotlib pillow numpy
 
 ### Chạy Giao Diện Hiện Tại (Khuyến Nghị)
 
-```bash
+```powershell
 # Giao diện Streamlit hiện tại
-python -m streamlit run app_streamlit_modern.py
+.\.venv\Scripts\python.exe -m streamlit run app_streamlit_modern.py --server.port 8515
 ```
 
 Sau đó mở trình duyệt tại:
 
 ```text
-http://localhost:8501
+http://localhost:8515
 ```
 
 **Ghi chú**:
@@ -767,13 +767,13 @@ python knowledge_graph_benchmark.py \
 
 ### Inference (Dự Đoán)
 
-```bash
+```powershell
 # CLI inference
 python demo_infer.py --image path/to/pill_image.jpg \
                      --output outputs/
 
 # Giao diện Streamlit hiện tại
-python -m streamlit run app_streamlit_modern.py
+.\.venv\Scripts\python.exe -m streamlit run app_streamlit_modern.py --server.port 8515
 ```
 
 ### Output Files

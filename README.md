@@ -5,6 +5,18 @@
 >
 > Tài liệu chi tiết bằng tiếng Việt: `README_VI.md`
 
+## Chạy nhanh giao diện Streamlit
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run app_streamlit_modern.py --server.port 8515
+```
+
+Mở tại:
+
+```text
+http://localhost:8515
+```
+
 ## Tổng quan
 
 Dự án này đã được rút gọn về một bài toán duy nhất:
