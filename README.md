@@ -1,9 +1,9 @@
 # VAIPE Pill Classification
 
-> Toolkit nhan dien vien thuoc dua tren dataset VAIPE, gom classifier cho anh crop tung vien,
-> detector cho anh nhieu vien, giao dien demo, va knowledge-graph reranking de cai thien ket qua.
+> Bộ công cụ nhận diện viên thuốc dựa trên dataset VAIPE, gồm classifier cho ảnh crop từng viên,
+> detector cho ảnh nhiều viên, giao diện demo, và knowledge-graph reranking để cải thiện kết quả.
 >
-> Tai lieu chi tiet bang tieng Viet: `README_VI.md`
+> Tài liệu chi tiết bằng tiếng Việt: `README_VI.md`
 
 ## Tong quan
 
