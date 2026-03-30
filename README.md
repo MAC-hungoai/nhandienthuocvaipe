@@ -5,32 +5,32 @@
 >
 > Tài liệu chi tiết bằng tiếng Việt: `README_VI.md`
 
-## Tong quan
+## Tổng quan
 
-Du an nay da duoc rut gon ve mot bai toan duy nhat:
+Dự án này đã được rút gọn về một bài toán duy nhất:
 
-- **De tai:** Phan loai **mot vien thuoc don le** tu anh crop cua dataset VAIPE
-- **Dau vao:** Anh crop cua 1 vien thuoc
-- **Dau ra:** VAIPE `label_id` va xac suat du doan
+- **Đề tài:** Phân loại **một viên thuốc đơn lẻ** từ ảnh crop của dataset VAIPE
+- **Đầu vào:** Ảnh crop của 1 viên thuốc
+- **Đầu ra:** VAIPE `label_id` và xác suất dự đoán
 
-Ly do chon bai toan nay:
+Lý do chọn bài toán này:
 
-- Dataset `public_train/pill` co bbox cho tung vien thuoc, phu hop de cat thanh crop roi train classifier.
-- Yeu cau cua ban la "dua anh thuoc vao roi doan dung hay chua", nen classification tren crop la phu hop hon detection tren toa thuoc.
-- Pipeline cu trong project bi lech bai toan: file train va file test khong dung chung mot muc tieu. Ban moi nay da duoc dong nhat.
+- Dataset `public_train/pill` có bbox cho từng viên thuốc, phù hợp để cắt thành crop rồi train classifier.
+- Yêu cầu của bạn là "đưa ảnh thuốc vào rồi đoán đúng hay chưa", nên classification trên crop là phù hợp hơn detection trên toa thuốc.
+- Pipeline cũ trong project bị lệch bài toán: file train và file test không dùng chung một mục tiêu. Bản mới này đã được đồng nhất.
 
-Hien tai repo co 2 nhanh su dung ro rang:
+Hiện tại repo có 2 nhánh sử dụng rõ ràng:
 
-- `single-pill classification`: phan loai 1 vien thuoc da crop
-- `multi-pill detection`: phat hien nhieu vien thuoc tren anh pill goc co bbox
+- `single-pill classification`: phân loại 1 viên thuốc đã crop
+- `multi-pill detection`: phát hiện nhiều viên thuốc trên ảnh pill gốc có bbox
 
-## Paper va kien truc duoc chon
+## Paper và kiến trúc được chọn
 
-- **Backbone chinh:** `ResNet18`
-- **Nhanh bo sung:** `Multi-stream (Color)` lay cam hung tu huong `CG-IMIF`, fuse them histogram mau HSV vao dac trung anh
-- **Paper nen tang:** *Deep Residual Learning for Image Recognition* (He et al.)
-- **Moc tham khao tu literature:** huong `CG-IMIF` bao cao khoang `98.8-99%` khi khai thac them thong tin mau/da kenh; day la muc tieu tham chieu cho nhanh color stream, khong phai cam ket ket qua mac dinh cua checkpoint hien tai.
-- **Ly do chon:** ResNet18 van nhe, on dinh, de hoi tu; nhanh color stream giup bo sung thong tin sac thai/hinh thai dac biet huu ich voi anh vien thuoc.
+- **Backbone chính:** `ResNet18`
+- **Nhánh bổ sung:** `Multi-stream (Color)` lấy cảm hứng từ hướng `CG-IMIF`, fuse thêm histogram màu HSV vào đặc trưng ảnh
+- **Paper nền tảng:** *Deep Residual Learning for Image Recognition* (He et al.)
+- **Mốc tham khảo từ literature:** hướng `CG-IMIF` báo cáo khoảng `98.8-99%` khi khai thác thêm thông tin màu/đa kênh; đây là mục tiêu tham chiếu cho nhánh color stream, không phải cam kết kết quả mặc định của checkpoint hiện tại.
+- **Lý do chọn:** ResNet18 vẫn nhẹ, ổn định, dễ hội tụ; nhánh color stream giúp bổ sung thông tin sắc thái/hình thái đặc biệt hữu ích với ảnh viên thuốc.
 
 ## Cau truc toi gian
 
