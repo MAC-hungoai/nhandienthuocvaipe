@@ -33,7 +33,7 @@ Dự án này xây dựng một **pipeline hoàn chỉnh** để:
 - **Cấu trúc**: 
   - `archive(1)/public_train/pill/image/` - Ảnh viên thuốc gốc (có nhiều viên trong 1 ảnh)
   - `archive(1)/public_train/pill/label/` - Nhãn JSON chứa bbox và label_id cho từng viên
-- **Tổng số class**: ~200+ loại viên thuốc khác nhau
+- **Tổng số class**: 108 loại viên thuốc (`label_id`) trong split classifier hiện tại
 
 ### Quy Trình Xử Lý
 
@@ -487,8 +487,8 @@ FOR epoch = 1 TO max_epochs:
 
 ```
 Metrics tính toán:
-- Accuracy: (# đúng) / (# tất cả)
-- Top-3 Accuracy: # lớp đúng trong top-3 dự đoán
+- Top-1 Accuracy: nhãn đúng đứng ở hạng 1
+- Top-3 Accuracy: nhãn đúng xuất hiện trong 3 dự đoán có xác suất cao nhất
 - Per-class Accuracy: Cho từng loại thuốc
 - Precision, Recall, F1-score (macro)
 - Confusion Matrix
@@ -757,13 +757,13 @@ python test.py --checkpoint checkpoints/best_model.pth \
                --output-dir outputs/classifier_results
 
 # Test detector
-python detection_test.py --checkpoint checkpoints/detection/best_model.pth \
+python detection_test.py --checkpoint checkpoints/detection_mnv3_hardmining_ft_v2/best_model.pth \
                          --output-dir outputs/detector_results
 
 # Benchmark với Knowledge Graph
 python knowledge_graph_benchmark.py \
   --classifier-checkpoint checkpoints/best_model.pth \
-  --detector-checkpoint checkpoints/detection/best_model.pth \
+  --detector-checkpoint checkpoints/detection_mnv3_hardmining_ft_v2/best_model.pth \
   --knowledge-graph-artifact checkpoints/knowledge_graph_vaipe.json \
   --build-knowledge-graph
 ```
@@ -773,11 +773,22 @@ python knowledge_graph_benchmark.py \
 ```powershell
 # CLI inference
 python demo_infer.py --image path/to/pill_image.jpg \
-                     --output outputs/
+                     --output-dir checkpoints/demo_app_output
 
 # Giao diện Streamlit hiện tại
 .\.venv\Scripts\python.exe -m streamlit run app_streamlit_modern.py --server.port 8515
 ```
+
+Checkpoint mặc định hiện tại:
+
+- Detector: `checkpoints/detection_mnv3_hardmining_ft_v2/best_model.pth`
+- Classifier: `checkpoints/best_model.pth`
+
+Ghi chú về luồng xử lý:
+
+- App ưu tiên chạy `detector + classifier` cho ảnh gốc tải lên.
+- Nếu detector chỉ tìm thấy `1` viên, giao diện vẫn có thể hiển thị theo luồng detector; số viên thực tế xem ở trường `Số viên` hoặc `num_detections`.
+- Với ảnh crop sẵn một viên, bạn vẫn có thể dùng `test.py --image ...` để chạy thuần classifier.
 
 ### Output Files
 
@@ -883,30 +894,34 @@ scripts\train_classifier_real_adapt.bat
 
 ## 📊 Kết Quả & Hiệu Năng
 
-### Benchmark Results (Current Best Models)
+### Benchmark Results (Checkpoint Mặc Định Hiện Tại)
 
-#### Classifier (ResNet18 + Color Fusion v1)
+#### Classifier mặc định (`checkpoints/best_model.pth`)
 | Metric | Value |
 |--------|-------|
-| Test Accuracy | ~92-94% |
-| Top-3 Accuracy | ~97-98% |
-| Macro F1-score | ~85-90% |
-| Inference Time/Image | ~10-15ms (GPU) |
+| Top-1 Accuracy | 96.23% |
+| Top-3 Accuracy | 99.36% |
+| Macro F1-score | 90.88% |
+| Test samples | 3,285 crop |
+| Loss | 0.5625 |
 | Model Size | ~45 MB |
 
-#### Detector (Faster R-CNN - MobileNetV3)
+#### Detector mặc định (`checkpoints/detection_mnv3_hardmining_ft_v2/best_model.pth`)
 | Metric | Value |
 |--------|-------|
-| mAP@0.5 (IoU) | ~78-82% |
-| Inference Time/Image | ~50-100ms (GPU) |
+| Precision | 88.94% |
+| Recall | 95.39% |
+| F1-score | 92.05% |
+| Mean matched IoU | 86.35% |
+| Test images | 954 ảnh |
 | Model Size | ~120 MB |
 
 #### With Knowledge Graph Re-ranking
-| Metric | Improvement |
-|--------|------------|
-| Final Accuracy | +2-3% |
-| Top-1 Recovery | +5-8% |
-| Rejection Handling | Improved |
+| Ghi chú | Giá trị |
+|--------|---------|
+| Trạng thái | Có thể bật trong pipeline detector + classifier |
+| Tác động | Mức cải thiện phụ thuộc checkpoint detector/classifier đang ghép |
+| Cách đo | Dùng `knowledge_graph_benchmark.py` để đo trên đúng bộ checkpoint bạn đang chạy |
 
 ### Hyperparameter Effects
 
@@ -922,7 +937,7 @@ scripts\train_classifier_real_adapt.bat
 
 **Color Fusion Contribution**:
 - RGB features alone: ~88-90%
-- + Color stream: ~92-94%
+- + Color stream: checkpoint mặc định hiện tại đạt Top-1 96.23% và Top-3 99.36%
 - Improvement: +2-4% (đặc biệt với màu rõ)
 
 ---

@@ -7,13 +7,13 @@ Thư mục này không được đẩy toàn bộ lên Git vì chứa file nặn
 Tối thiểu để `app_streamlit_modern.py` chạy được detector nhiều viên:
 
 - `detection_mnv3_hardmining_ft_v2/best_model.pth`
-- `retrain_cgimif_s42_det8/best_model.pth`
+- `best_model.pth`
 
 ## Artifact nên có thêm
 
 - `detection_mnv3_hardmining_ft_v2/test_metrics.json`
-- `retrain_cgimif_s42_det8/test_metrics.json`
-- `retrain_cgimif_s42_det8/dataset_summary.json`
+- `test_metrics.json`
+- `dataset_summary.json`
 - `knowledge_graph_vaipe.json`
 
 ## Gợi ý

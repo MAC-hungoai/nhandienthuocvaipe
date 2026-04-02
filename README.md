@@ -205,8 +205,8 @@ python demo_infer.py --image "archive (1)/public_train/pill/image/VAIPE_P_1011_0
 
 Script này mặc định dùng:
 
-- detector: `checkpoints/detection_mnv3_hardmining_ft_lr5e5_e3/best_model.pth`
-- classifier: `checkpoints/retrain_cgimif_s42_det8/best_model.pth`
+- detector: `checkpoints/detection_mnv3_hardmining_ft_v2/best_model.pth`
+- classifier: `checkpoints/best_model.pth`
 - selective KG: `on`
 
 Và sinh thêm:

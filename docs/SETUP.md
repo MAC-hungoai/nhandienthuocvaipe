@@ -48,13 +48,13 @@ Nếu clone repo về máy khác, bạn cần tự chuẩn bị lại các artif
 App hiện tại mong đợi tối thiểu:
 
 - `checkpoints/detection_mnv3_hardmining_ft_v2/best_model.pth`
-- `checkpoints/retrain_cgimif_s42_det8/best_model.pth`
+- `checkpoints/best_model.pth`
 
 Artifact nên có thêm để dashboard đủ số liệu:
 
 - `checkpoints/detection_mnv3_hardmining_ft_v2/test_metrics.json`
-- `checkpoints/retrain_cgimif_s42_det8/test_metrics.json`
-- `checkpoints/retrain_cgimif_s42_det8/dataset_summary.json`
+- `checkpoints/test_metrics.json`
+- `checkpoints/dataset_summary.json`
 
 Artifact knowledge graph:
 

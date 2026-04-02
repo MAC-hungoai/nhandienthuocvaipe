@@ -2825,6 +2825,8 @@ def predict_pill(image: np.ndarray, model_info: Dict, checkpoint: Dict = None) -
             "class_name": str(primary_detection["display_label"]),
             "confidence": float(primary_detection["score"]),
             "num_detections": int(response.get("num_detections", len(detections))),
+            "raw_num_detections": int(response.get("raw_num_detections", len(detections))),
+            "suppressed_detections": int(response.get("suppressed_detections", 0)),
             "detections": ranked_detections,
             "top_labels": [str(item["display_label"]) for item in ranked_detections[:5]],
             "probabilities": {
@@ -3007,6 +3009,8 @@ def create_confidence_gauge_v2(
 ):
     value = max(0.0, min(float(confidence) * 100.0, 100.0))
     reference_value = None if reference is None else max(0.0, min(float(reference) * 100.0, 100.0))
+    if reference_value is not None and normalize_delta_points(value - reference_value) == 0.0:
+        reference_value = value
     indicator_config = {
         "mode": "gauge+number" + ("+delta" if reference is not None else ""),
         "value": value,
@@ -3198,6 +3202,10 @@ def create_history_chart_v2(
     return fig
 
 
+def has_history_series(series_map: Dict[str, list]) -> bool:
+    return any(bool(values) for values in series_map.values())
+
+
 def render_model_performance_dashboard() -> None:
     dashboard = load_training_dashboard()
     detector_test = dashboard.get("detector_test") or {}
@@ -3216,17 +3224,17 @@ def render_model_performance_dashboard() -> None:
     classifier_delta = compute_delta_points(classifier_test.get("accuracy"), classifier_reference)
     recall_delta = compute_delta_points(detector_test.get("recall"), detector_recall_reference)
     top3_delta = compute_delta_points(classifier_test.get("top3_accuracy"), classifier_top3_reference)
+    detector_delta_display = normalize_delta_points(detector_delta)
+    classifier_delta_display = normalize_delta_points(classifier_delta)
 
     insight_parts = []
-    if detector_delta is not None:
-        detector_sign = "+" if detector_delta >= 0 else ""
-        insight_parts.append(f"F1 phát hiện {detector_sign}{detector_delta:.1f} điểm")
-    if classifier_delta is not None:
-        classifier_sign = "+" if classifier_delta >= 0 else ""
-        insight_parts.append(f"Top-1 {classifier_sign}{classifier_delta:.1f} điểm")
+    if detector_delta_display not in (None, 0.0):
+        insight_parts.append(f"F1 phát hiện {format_delta_points(detector_delta_display)}")
+    if classifier_delta_display not in (None, 0.0):
+        insight_parts.append(f"Top-1 {format_delta_points(classifier_delta_display)}")
 
-    if detector_delta is not None and classifier_delta is not None:
-        if detector_delta > 0 and classifier_delta < 0:
+    if detector_delta_display is not None and classifier_delta_display is not None:
+        if detector_delta_display > 0 and classifier_delta_display < 0:
             insight_text = (
                 f"Checkpoint hiện tại tốt hơn bản trước ở {insight_parts[0]}, "
                 f"nhưng giảm ở {insight_parts[1]}. Khuyến nghị: kiểm tra lại bộ crop classifier."
@@ -3286,9 +3294,8 @@ def render_model_performance_dashboard() -> None:
             config={"displayModeBar": False},
         )
         detector_note = "Đang dùng checkpoint hiện tại."
-        if detector_delta is not None:
-            sign = "+" if detector_delta >= 0 else ""
-            detector_note = f"So với checkpoint trước: {sign}{detector_delta:.1f} điểm"
+        if detector_delta_display is not None:
+            detector_note = f"So với checkpoint trước: {format_delta_points(detector_delta_display, zero_text='không đổi')}"
         st.caption(detector_note)
     with gauge_cols[1]:
         st.plotly_chart(
@@ -3301,40 +3308,47 @@ def render_model_performance_dashboard() -> None:
             config={"displayModeBar": False},
         )
         classifier_note = "Đang dùng checkpoint hiện tại."
-        if classifier_delta is not None:
-            sign = "+" if classifier_delta >= 0 else ""
-            classifier_note = f"So với checkpoint trước: {sign}{classifier_delta:.1f} điểm"
+        if classifier_delta_display is not None:
+            classifier_note = f"So với checkpoint trước: {format_delta_points(classifier_delta_display, zero_text='không đổi')}"
         st.caption(classifier_note)
 
     chart_cols = st.columns(2)
     with chart_cols[0]:
-        st.plotly_chart(
-            create_history_chart_v2(
-                {
-                    "Loss huấn luyện": classifier_history.get("train_loss", []),
-                    "Loss xác thực": classifier_history.get("val_loss", []),
-                },
-                title="Loss theo epoch",
-                yaxis_title="Loss",
-                percent=False,
-            ),
-            width="stretch",
-            config={"displayModeBar": False},
-        )
+        classifier_loss_series = {
+            "Loss huấn luyện": classifier_history.get("train_loss", []),
+            "Loss xác thực": classifier_history.get("val_loss", []),
+        }
+        if has_history_series(classifier_loss_series):
+            st.plotly_chart(
+                create_history_chart_v2(
+                    classifier_loss_series,
+                    title="Loss theo epoch",
+                    yaxis_title="Loss",
+                    percent=False,
+                ),
+                width="stretch",
+                config={"displayModeBar": False},
+            )
+        else:
+            st.info("Checkpoint classifier hiện tại chưa có `history.json`, nên chưa hiển thị được loss theo epoch.")
     with chart_cols[1]:
-        st.plotly_chart(
-            create_history_chart_v2(
-                {
-                    "Độ chính xác huấn luyện": classifier_history.get("train_acc", []),
-                    "Độ chính xác xác thực": classifier_history.get("val_acc", []),
-                },
-                title="Độ chính xác theo epoch",
-                yaxis_title="Độ chính xác (%)",
-                percent=True,
-            ),
-            width="stretch",
-            config={"displayModeBar": False},
-        )
+        classifier_acc_series = {
+            "Độ chính xác huấn luyện": classifier_history.get("train_acc", []),
+            "Độ chính xác xác thực": classifier_history.get("val_acc", []),
+        }
+        if has_history_series(classifier_acc_series):
+            st.plotly_chart(
+                create_history_chart_v2(
+                    classifier_acc_series,
+                    title="Độ chính xác theo epoch",
+                    yaxis_title="Độ chính xác (%)",
+                    percent=True,
+                ),
+                width="stretch",
+                config={"displayModeBar": False},
+            )
+        else:
+            st.info("Checkpoint classifier hiện tại mới có benchmark test sạch; accuracy theo epoch sẽ có sau khi hoàn tất một run train đầy đủ.")
 
     comparison_rows = [
         {
@@ -3382,6 +3396,9 @@ def load_ui_benchmarks() -> Dict[str, object]:
         "classifier_top1": None,
         "classifier_top3": None,
         "num_classes": None,
+        "classifier_split_strategy": None,
+        "classifier_test_samples": None,
+        "classifier_test_images": None,
     }
 
     try:
@@ -3404,6 +3421,15 @@ def load_ui_benchmarks() -> Dict[str, object]:
         with open(DEFAULT_DEMO_CLASSIFIER_CHECKPOINT.parent / "dataset_summary.json", "r", encoding="utf-8") as handle:
             dataset_summary = json.load(handle)
         payload["num_classes"] = dataset_summary.get("num_classes")
+        payload["classifier_split_strategy"] = dataset_summary.get("split_strategy")
+        payload["classifier_test_images"] = dataset_summary.get("test_unique_source_images")
+    except Exception:
+        pass
+
+    try:
+        with open(DEFAULT_DEMO_CLASSIFIER_CHECKPOINT.parent / "test_metrics.json", "r", encoding="utf-8") as handle:
+            classifier_metrics = json.load(handle)
+        payload["classifier_test_samples"] = classifier_metrics.get("samples")
     except Exception:
         pass
 
@@ -3416,6 +3442,26 @@ def format_metric_value(value: Optional[float], *, percent: bool = True, decimal
     if percent:
         return f"{float(value) * 100:.{decimals}f}%"
     return f"{float(value):.{decimals}f}"
+
+
+def normalize_delta_points(delta_points: Optional[float], *, decimals: int = 1) -> Optional[float]:
+    if delta_points is None:
+        return None
+    rounded = round(float(delta_points), decimals)
+    if rounded == 0:
+        return 0.0
+    return rounded
+
+
+def format_delta_points(delta_points: Optional[float], *, decimals: int = 1, zero_text: str = "Không đổi") -> str:
+    normalized = normalize_delta_points(delta_points, decimals=decimals)
+    if normalized is None:
+        return "Đang dùng"
+    if normalized > 0:
+        return f"+{normalized:.{decimals}f} điểm"
+    if normalized < 0:
+        return f"{normalized:.{decimals}f} điểm"
+    return zero_text
 
 
 def render_stat_card(label: str, value: str, caption: str, *, featured: bool = False) -> None:
@@ -3446,15 +3492,19 @@ def render_progress_metric_card(
     delta_points: Optional[float] = None,
 ) -> None:
     percentage = max(0.0, min(float(value or 0.0) * 100.0, 100.0))
-    if delta_points is None:
+    normalized_delta = normalize_delta_points(delta_points)
+    if normalized_delta is None:
         badge_class = "neutral"
         badge_text = "Đang dùng"
-    elif delta_points >= 0:
+    elif normalized_delta > 0:
         badge_class = "positive"
-        badge_text = f"+{delta_points:.1f} điểm"
-    else:
+        badge_text = format_delta_points(normalized_delta)
+    elif normalized_delta < 0:
         badge_class = "negative"
-        badge_text = f"{delta_points:.1f} điểm"
+        badge_text = format_delta_points(normalized_delta)
+    else:
+        badge_class = "neutral"
+        badge_text = "Không đổi"
 
     st.markdown(
         f"""
@@ -3666,15 +3716,19 @@ def get_prediction_feedback(prediction: Dict, confidence_threshold: float) -> Tu
 
 def render_prediction_summary(prediction: Dict, confidence_threshold: float) -> None:
     feedback_title, feedback_class, feedback_desc = get_prediction_feedback(prediction, confidence_threshold)
-    mode_label = "Detector + KG" if prediction.get("mode") == "multi_pill_detection" else "Crop classifier"
+    is_detector_pipeline = prediction.get("mode") == "multi_pill_detection"
+    mode_label = "Detector + classifier" if is_detector_pipeline else "Crop classifier"
     chips = [
         f"Ngưỡng hiển thị: {confidence_threshold:.0%}",
         f"Luồng: {mode_label}",
     ]
-    if prediction.get("mode") == "multi_pill_detection":
+    if is_detector_pipeline:
         chips.append(f"Số viên detect: {prediction.get('num_detections', 0)}")
     else:
         chips.append(f"Top nhãn hiển thị: {min(5, len(prediction.get('top_5', [])))}")
+
+    if is_detector_pipeline and int(prediction.get("suppressed_detections", 0)) > 0:
+        chips.append(f"Gop box trung: {int(prediction.get('suppressed_detections', 0))}")
 
     chip_html = "".join(f"<span class='tag-chip'>{escape(text)}</span>" for text in chips)
     st.markdown(
@@ -3696,7 +3750,7 @@ def render_prediction_summary(prediction: Dict, confidence_threshold: float) -> 
     with metric_cols[0]:
         st.metric("Độ tin cậy", f"{prediction['confidence']:.1%}")
     with metric_cols[1]:
-        st.metric("Luồng xử lý", "Multi-pill" if prediction.get("mode") == "multi_pill_detection" else "Single-crop")
+        st.metric("Luồng xử lý", mode_label)
     with metric_cols[2]:
         st.metric("Số viên", str(prediction.get("num_detections", 1)))
     with metric_cols[3]:
@@ -3749,19 +3803,27 @@ def render_empty_upload_state_compact() -> None:
 
 def render_prediction_summary_compact(prediction: Dict, confidence_threshold: float) -> None:
     feedback_title, feedback_class, _ = get_prediction_feedback(prediction, confidence_threshold)
-    is_multi = prediction.get("mode") == "multi_pill_detection"
-    eyebrow = "Viên nổi bật nhất" if is_multi else "Kết quả chính"
+    is_detector_pipeline = prediction.get("mode") == "multi_pill_detection"
+    num_detections = int(prediction.get("num_detections", 1))
+    has_multiple_detections = is_detector_pipeline and num_detections > 1
+    pipeline_label = "Detector + classifier" if is_detector_pipeline else "Crop classifier"
+    eyebrow = "Viên nổi bật nhất" if has_multiple_detections else ("Kết quả phát hiện" if is_detector_pipeline else "Kết quả chính")
     status_copy = get_result_status_copy(feedback_class)
     tags = [
         status_copy,
-        f"Luồng: {'Nhiều viên' if is_multi else 'Ảnh đơn'}",
+        f"Luồng: {pipeline_label}",
     ]
+    if is_detector_pipeline:
+        tags.append(f"Phát hiện: {num_detections} viên")
+
+    if is_detector_pipeline and int(prediction.get("suppressed_detections", 0)) > 0:
+        tags.append(f"Gop trung: -{int(prediction.get('suppressed_detections', 0))} box")
 
     confidence_width = max(6.0, min(float(prediction["confidence"]) * 100.0, 100.0))
     summary_text = (
         "Đang hiển thị viên có điểm cao nhất trong ảnh."
-        if is_multi
-        else "Mức tin cậy đủ rõ để tham khảo nhanh."
+        if has_multiple_detections
+        else ("Đã detect 1 viên rõ trong ảnh." if is_detector_pipeline else "Mức tin cậy đủ rõ để tham khảo nhanh.")
     )
 
     chip_html = "".join(
@@ -3769,7 +3831,7 @@ def render_prediction_summary_compact(prediction: Dict, confidence_threshold: fl
         else f"<span class='tag-chip'>{escape(text)}</span>"
         for index, text in enumerate(tags)
     )
-    source_label = "Detector + classifier" if is_multi else "Classifier"
+    source_label = pipeline_label
     st.markdown(
         f"""
         <div class="result-shell {feedback_class}">
@@ -3920,6 +3982,8 @@ def main():
 
                     if prediction.get("mode") == "multi_pill_detection":
                         st.info(f"Phát hiện {prediction['num_detections']} viên thuốc trong ảnh.")
+                        if int(prediction.get("suppressed_detections", 0)) > 0:
+                            st.caption(f"Da gop {int(prediction.get('suppressed_detections', 0))} box chong lan co score thap hon.")
                         top_labels = prediction.get("top_labels", [])[:3]
                         if top_labels:
                             st.caption("Các nhãn nổi bật: " + ", ".join(top_labels))
@@ -4182,6 +4246,11 @@ def render_hero_compact(benchmarks: Dict[str, object]) -> None:
         render_stat_card("Top-1", format_metric_value(benchmarks.get("classifier_top1")), "Nh\u1eadn di\u1ec7n \u1ea3nh \u0111\u01a1n")
     with stat_cols[3]:
         render_stat_card("Top-3", format_metric_value(benchmarks.get("classifier_top3")), "G\u1ee3i \u00fd \u1ed5n \u0111\u1ecbnh")
+
+    if benchmarks.get("classifier_split_strategy") == "grouped_source_image":
+        sample_text = f"{int(benchmarks['classifier_test_samples']):,} crop" if benchmarks.get("classifier_test_samples") else "-- crop"
+        image_text = f"{int(benchmarks['classifier_test_images']):,} \u1ea3nh g\u1ed1c" if benchmarks.get("classifier_test_images") else "-- \u1ea3nh g\u1ed1c"
+        st.caption(f"Benchmark classifier: held-out split theo \u1ea3nh g\u1ed1c ({sample_text}, {image_text} test).")
 
 
 def main_v2():
@@ -4448,7 +4517,7 @@ def main_v2():
                         "Kết quả": prediction["class_name"],
                         "Độ tin cậy": f"{prediction['confidence']:.2%}",
                         "Số viên": prediction.get("num_detections", 1),
-                        "Luồng": "Nhiều viên" if prediction.get("mode") == "multi_pill_detection" else "Ảnh đơn",
+                        "Luồng": "Detector + classifier" if prediction.get("mode") == "multi_pill_detection" else "Crop classifier",
                         "ID": prediction["class_id"],
                     })
                     progress_text.text(f"Đã phân tích {idx + 1}/{len(batch_files)} ảnh")

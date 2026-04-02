@@ -23,6 +23,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
 
+from check_model_metrics import build_accuracy_diagnostics
 from train import (
     DEFAULT_COLOR_BINS,
     DEFAULT_DATA_ROOT,
@@ -334,6 +335,11 @@ def evaluate_saved_model(
     with open(low_support_path, "w", encoding="utf-8") as handle:
         json.dump(low_support_metrics, handle, indent=2)
 
+    accuracy_diagnostics = build_accuracy_diagnostics(metrics, support_floor=support_threshold)
+    accuracy_diagnostics_path = output_dir / "accuracy_diagnostics.json"
+    with open(accuracy_diagnostics_path, "w", encoding="utf-8") as handle:
+        json.dump(accuracy_diagnostics, handle, indent=2)
+
     plot_confusion_matrix(metrics, output_dir / "confusion_matrix.png", normalize=True)
     plot_low_support_classes(low_support_metrics, output_dir / "low_support_accuracy.png")
 
@@ -345,12 +351,35 @@ def evaluate_saved_model(
     print(f"Accuracy: {float(metrics['accuracy']):.2%}")
     print(f"Top-3 accuracy: {float(metrics['top3_accuracy']):.2%}")
     print(f"Macro-F1: {float(metrics['macro_f1']):.2%}")
+    if accuracy_diagnostics.get("balanced_accuracy") is not None:
+        print(f"Balanced accuracy: {float(accuracy_diagnostics['balanced_accuracy']):.2%}")
+    if accuracy_diagnostics.get("median_recall") is not None:
+        print(f"Median class recall: {float(accuracy_diagnostics['median_recall']):.2%}")
     print(f"Loss: {float(metrics['loss']):.4f}")
     print(f"Saved: {metrics_path}")
     print(f"Saved: {per_class_path}")
     print(f"Saved: {low_support_path}")
+    print(f"Saved: {accuracy_diagnostics_path}")
     print(f"Saved: {output_dir / 'confusion_matrix.png'}")
     print(f"Saved: {output_dir / 'low_support_accuracy.png'}")
+    print()
+    print(f"Accuracy verdict: {accuracy_diagnostics['verdict']}")
+    reasons = list(accuracy_diagnostics.get("reasons", []))
+    if reasons:
+        for reason in reasons:
+            print(f"  - {reason}")
+
+    zero_recall_classes = list(accuracy_diagnostics.get("zero_recall_classes", []))
+    if zero_recall_classes:
+        print("Zero-recall classes:")
+        for item in zero_recall_classes[:10]:
+            support_text = (
+                f"support={item['support']}"
+                if item.get("support") is not None
+                else "support=unknown"
+            )
+            print(f"  label {item['label_id']}: {support_text}")
+
     print()
     print("Worst low-support classes:")
     for item in low_support_metrics[:10]:

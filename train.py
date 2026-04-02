@@ -4,9 +4,9 @@ Minimal VAIPE training pipeline for single-pill classification.
 Project focus:
 - Task: classify a single pill crop into a VAIPE label ID
 - Source data: archive (1)/public_train/pill/{image,label}
-- Training: 50 epochs, patience=6, early stopping
-- Outputs: best_model.pth, final_model.pth, history.json, test_metrics.json,
-  training_curves.png, confusion_matrix.png
+- Training: 50 epochs, patience=15, early stopping with a minimum-epochs guard
+- Outputs: best_model.pth, best_balanced_model.pth, final_model.pth, history.json,
+  test_metrics.json, training_curves.png, confusion_matrix.png
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import math
 import os
 import random
 import re
+import sys
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -29,9 +30,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 from PIL import Image
-from sklearn.metrics import confusion_matrix, f1_score, precision_recall_fscore_support
+from sklearn.metrics import balanced_accuracy_score, confusion_matrix, f1_score, precision_recall_fscore_support
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import models, transforms
+
+from check_model_metrics import build_accuracy_diagnostics
 
 
 DEFAULT_DATA_ROOT = Path("archive (1)") / "public_train" / "pill"
@@ -39,9 +42,10 @@ DEFAULT_OUTPUT_DIR = Path("checkpoints")
 DEFAULT_IMAGE_SIZE = 160
 DEFAULT_BATCH_SIZE = 64
 DEFAULT_EPOCHS = 50
-DEFAULT_PATIENCE = 6
+DEFAULT_PATIENCE = 15  # Minority classes need more time before early stopping.
+DEFAULT_MIN_EPOCHS = 10
 DEFAULT_SEED = 42
-DEFAULT_LR = 3e-4
+DEFAULT_LR = 1e-4  # 🔴 REDUCED: 3e-4→1e-4 (Focal Loss is sensitive)
 DEFAULT_WEIGHT_DECAY = 1e-4
 DEFAULT_VAL_RATIO = 0.10
 DEFAULT_TEST_RATIO = 0.10
@@ -49,6 +53,7 @@ DEFAULT_SAMPLER_POWER = 0.5
 DEFAULT_COLOR_BINS = 8
 DEFAULT_MODEL_VARIANT = "cg_imif_color_fusion"
 DEFAULT_SPLIT_MANIFEST = "split_manifest.json"
+DEFAULT_SPLIT_STRATEGY = "grouped_source_image"
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".JPG", ".PNG")
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -300,6 +305,7 @@ def save_split_manifest(
         "test_ratio": args.test_ratio,
         "image_size": args.image_size,
         "deterministic": bool(args.deterministic),
+        "split_strategy": args.split_strategy,
         "data_roots": [str(args.data_root), *[str(root) for root in args.extra_data_root]],
         "train_records": list(train_records),
         "val_records": list(val_records),
@@ -319,7 +325,143 @@ def maybe_load_split_manifest(manifest_path: Path) -> Dict[str, object] | None:
     return payload
 
 
+def build_split_audit(
+    train_records: Sequence[Dict[str, object]],
+    val_records: Sequence[Dict[str, object]],
+    test_records: Sequence[Dict[str, object]],
+) -> Dict[str, object]:
+    def _source_images(records: Sequence[Dict[str, object]]) -> set[str]:
+        return {
+            str(record.get("source_image_path") or record.get("image_path") or "")
+            for record in records
+            if str(record.get("source_image_path") or record.get("image_path") or "")
+        }
+
+    def _labels(records: Sequence[Dict[str, object]]) -> set[int]:
+        return {int(record["label_id"]) for record in records}
+
+    train_images = _source_images(train_records)
+    val_images = _source_images(val_records)
+    test_images = _source_images(test_records)
+
+    train_labels = _labels(train_records)
+    val_labels = _labels(val_records)
+    test_labels = _labels(test_records)
+    all_labels = train_labels | val_labels | test_labels
+
+    return {
+        "train_unique_source_images": len(train_images),
+        "val_unique_source_images": len(val_images),
+        "test_unique_source_images": len(test_images),
+        "train_val_overlap_images": len(train_images & val_images),
+        "train_test_overlap_images": len(train_images & test_images),
+        "val_test_overlap_images": len(val_images & test_images),
+        "train_num_classes": len(train_labels),
+        "val_num_classes": len(val_labels),
+        "test_num_classes": len(test_labels),
+        "missing_from_train": sorted(all_labels - train_labels),
+        "missing_from_val": sorted(all_labels - val_labels),
+        "missing_from_test": sorted(all_labels - test_labels),
+    }
+
+
 def split_records(
+    records: Sequence[Dict[str, object]],
+    seed: int,
+    val_ratio: float = DEFAULT_VAL_RATIO,
+    test_ratio: float = DEFAULT_TEST_RATIO,
+    split_strategy: str = DEFAULT_SPLIT_STRATEGY,
+) -> Tuple[List[Dict[str, object]], List[Dict[str, object]], List[Dict[str, object]]]:
+    if split_strategy == "legacy_label":
+        return split_records_legacy_label(records, seed, val_ratio=val_ratio, test_ratio=test_ratio)
+    if split_strategy != "grouped_source_image":
+        raise ValueError(f"Unsupported split strategy: {split_strategy}")
+
+    grouped_records: Dict[str, List[Dict[str, object]]] = defaultdict(list)
+    group_labels: Dict[str, set[int]] = defaultdict(set)
+    for record in records:
+        group_key = str(record.get("source_image_path") or record.get("image_path") or record.get("crop_path") or "")
+        if not group_key:
+            raise ValueError("Record is missing source_image_path/image_path required for grouped split.")
+        grouped_records[group_key].append(dict(record))
+        group_labels[group_key].add(int(record["label_id"]))
+
+    rng = random.Random(seed)
+    group_keys = list(grouped_records)
+    rng.shuffle(group_keys)
+    group_keys.sort(key=lambda key: len(grouped_records[key]), reverse=True)
+
+    label_train_group_counts: Counter[int] = Counter()
+    for labels in group_labels.values():
+        for label_id in labels:
+            label_train_group_counts[label_id] += 1
+    label_total_group_counts: Counter[int] = Counter(label_train_group_counts)
+
+    total_records = len(records)
+    target_test = max(1, int(round(total_records * test_ratio)))
+    target_val = max(1, int(round(total_records * val_ratio)))
+    while total_records - target_val - target_test < 1:
+        if target_test > target_val and target_test > 1:
+            target_test -= 1
+        elif target_val > 1:
+            target_val -= 1
+        else:
+            break
+
+    unassigned = list(group_keys)
+    split_groups: Dict[str, List[str]] = {"train": [], "val": [], "test": []}
+    split_seen_labels: Dict[str, set[int]] = {"train": set(), "val": set(), "test": set()}
+
+    def can_move_group(group_key: str) -> bool:
+        labels = group_labels[group_key]
+        return all(label_train_group_counts[label_id] > 1 for label_id in labels)
+
+    def assign_group(group_key: str, split_name: str) -> None:
+        split_groups[split_name].append(group_key)
+        unassigned.remove(group_key)
+        split_seen_labels[split_name].update(group_labels[group_key])
+        for label_id in group_labels[group_key]:
+            label_train_group_counts[label_id] -= 1
+
+    def fill_split(split_name: str, target_records: int) -> None:
+        current_records = 0
+        while current_records < target_records:
+            remaining = target_records - current_records
+            candidates = [key for key in unassigned if can_move_group(key)]
+            if not candidates:
+                break
+            rng.shuffle(candidates)
+            candidates.sort(
+                key=lambda key: (
+                    -len(group_labels[key] - split_seen_labels[split_name]),
+                    -sum(1.0 / float(label_total_group_counts[label_id]) for label_id in (group_labels[key] - split_seen_labels[split_name])),
+                    int(len(grouped_records[key]) > remaining),
+                    abs(len(grouped_records[key]) - remaining),
+                    -len(grouped_records[key]),
+                )
+            )
+            chosen = candidates[0]
+            assign_group(chosen, split_name)
+            current_records += len(grouped_records[chosen])
+
+    fill_split("test", target_test)
+    fill_split("val", target_val)
+    split_groups["train"].extend(unassigned)
+
+    train_records: List[Dict[str, object]] = []
+    val_records: List[Dict[str, object]] = []
+    test_records: List[Dict[str, object]] = []
+    for group_key in split_groups["train"]:
+        train_records.extend(grouped_records[group_key])
+    for group_key in split_groups["val"]:
+        val_records.extend(grouped_records[group_key])
+    for group_key in split_groups["test"]:
+        test_records.extend(grouped_records[group_key])
+
+    return train_records, val_records, test_records
+
+
+def split_records_legacy_label(
     records: Sequence[Dict[str, object]],
     seed: int,
     val_ratio: float = DEFAULT_VAL_RATIO,
@@ -697,6 +839,55 @@ class FocalLoss(nn.Module):
         return (focal_term * ce_loss).mean()
 
 
+def compute_balanced_accuracy_on_loader(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+) -> float:
+    """
+    🔴 CRITICAL FIX: Compute balanced_accuracy to detect minority class failures.
+    
+    Balanced accuracy treats all classes equally (unlike regular accuracy).
+    This catches when model ignores rare classes (labels 32, 66, 88).
+    """
+    model.eval()
+    all_preds = []
+    all_targets = []
+    
+    with torch.no_grad():
+        for images, color_features, targets in loader:
+            images = images.to(device, non_blocking=True)
+            color_features = color_features.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
+            
+            logits = forward_model(model, images, color_features)
+            preds = logits.argmax(dim=1).cpu().numpy()
+            targets_np = targets.cpu().numpy()
+            
+            all_preds.extend(preds)
+            all_targets.extend(targets_np)
+    
+    balanced_acc = balanced_accuracy_score(all_targets, all_preds)
+    return float(balanced_acc)
+
+
+def parse_manual_class_boosts(boost_specs: Sequence[str]) -> Dict[int, float]:
+    boosts: Dict[int, float] = {}
+    for spec in boost_specs:
+        value = str(spec).strip()
+        if not value:
+            continue
+        if ":" not in value:
+            raise ValueError(f"Invalid --manual-class-boost '{spec}'. Expected format label_id:factor")
+        label_text, factor_text = value.split(":", 1)
+        label_id = int(label_text.strip())
+        factor = float(factor_text.strip())
+        if factor <= 0:
+            raise ValueError(f"Manual class boost factor must be > 0, got {factor} for label {label_id}")
+        boosts[label_id] = factor
+    return boosts
+
+
 def run_epoch(
     model: nn.Module,
     loader: DataLoader,
@@ -967,7 +1158,7 @@ def checkpoint_payload(
     best_epoch: int,
     best_val_loss: float,
     args: argparse.Namespace,
-    extra_metrics: Dict[str, float] | None = None,
+    extra_metrics: Dict[str, object] | None = None,
 ) -> Dict[str, object]:
     idx_to_class = {index: label_id for label_id, index in class_to_idx.items()}
     payload = {
@@ -998,6 +1189,38 @@ def checkpoint_payload(
 def save_json(path: Path, payload: Dict[str, object]) -> None:
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
+
+
+def save_history_snapshot(
+    output_dir: Path,
+    history: Dict[str, List[float]],
+    *,
+    best_epoch: int,
+    best_val_loss: float,
+    total_train_time_sec: float,
+    completed: bool,
+    test_metrics: Dict[str, object] | None = None,
+    extra_summary: Dict[str, object] | None = None,
+) -> None:
+    summary = {
+        "best_epoch": best_epoch,
+        "best_val_loss": None if math.isinf(best_val_loss) else float(best_val_loss),
+        "epochs_ran": len(history["train_loss"]),
+        "total_train_time_sec": float(total_train_time_sec),
+        "avg_epoch_time_sec": float(np.mean(history["epoch_time_sec"])) if history["epoch_time_sec"] else 0.0,
+        "completed": bool(completed),
+    }
+    if test_metrics is not None:
+        summary.update(
+            {
+                "test_accuracy": float(test_metrics["accuracy"]),
+                "test_top3_accuracy": float(test_metrics["top3_accuracy"]),
+                "test_macro_f1": float(test_metrics["macro_f1"]),
+            }
+        )
+    if extra_summary:
+        summary.update(extra_summary)
+    save_json(output_dir / "history.json", {**history, "summary": summary})
 
 
 def plot_training_curves(
@@ -1123,6 +1346,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size")
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS, help="Maximum epochs")
     parser.add_argument("--patience", type=int, default=DEFAULT_PATIENCE, help="Early stopping patience")
+    parser.add_argument(
+        "--min-epochs",
+        type=int,
+        default=DEFAULT_MIN_EPOCHS,
+        help="Do not allow early stopping before this many epochs have completed",
+    )
     parser.add_argument("--lr", type=float, default=DEFAULT_LR, help="Learning rate")
     parser.add_argument("--weight-decay", type=float, default=DEFAULT_WEIGHT_DECAY, help="AdamW weight decay")
     parser.add_argument(
@@ -1150,6 +1379,12 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_SAMPLER_POWER,
         help="Sampling strength. 0.5=sqrt inverse frequency, 1.0=full inverse frequency",
     )
+    parser.add_argument(
+        "--manual-class-boost",
+        action="append",
+        default=[],
+        help="Optional class-weight boost in the format label_id:factor. Repeat for multiple labels.",
+    )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed")
     parser.add_argument(
         "--deterministic",
@@ -1159,6 +1394,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--val-ratio", type=float, default=DEFAULT_VAL_RATIO, help="Validation split ratio")
     parser.add_argument("--test-ratio", type=float, default=DEFAULT_TEST_RATIO, help="Test split ratio")
+    parser.add_argument(
+        "--split-strategy",
+        type=str,
+        default=DEFAULT_SPLIT_STRATEGY,
+        choices=("grouped_source_image", "legacy_label"),
+        help="Split strategy. grouped_source_image avoids source-image leakage; legacy_label reproduces the older label-wise split.",
+    )
     parser.add_argument(
         "--num-workers",
         type=int,
@@ -1185,6 +1427,12 @@ def main() -> None:
     # ========== SETUP ==========
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if args.min_epochs < 1:
+        raise ValueError("--min-epochs must be >= 1")
+    if args.min_epochs > args.epochs:
+        raise ValueError("--min-epochs cannot be greater than --epochs")
 
     # Set seed để reproducibility
     set_seed(args.seed, deterministic=args.deterministic)
@@ -1210,8 +1458,11 @@ def main() -> None:
             print(f"  - {root}", flush=True)
     print(f"Epochs: {args.epochs}", flush=True)
     print(f"Patience: {args.patience}", flush=True)
+    print(f"Min epochs: {args.min_epochs}", flush=True)
+    print(f"Loss type: {args.loss_type}", flush=True)
     print(f"Model variant: {args.model_variant}", flush=True)
     print(f"Deterministic: {args.deterministic}", flush=True)
+    print(f"Split strategy: {args.split_strategy}", flush=True)
     print(f"Output dir: {args.output_dir}", flush=True)
     print(flush=True)
 
@@ -1230,7 +1481,18 @@ def main() -> None:
         seed=args.seed,
         val_ratio=args.val_ratio,
         test_ratio=args.test_ratio,
+        split_strategy=args.split_strategy,
     )
+    split_audit = build_split_audit(train_records, val_records, test_records)
+    save_json(args.output_dir / "split_audit.json", split_audit)
+    if args.split_strategy == "grouped_source_image":
+        overlap_total = (
+            int(split_audit["train_val_overlap_images"])
+            + int(split_audit["train_test_overlap_images"])
+            + int(split_audit["val_test_overlap_images"])
+        )
+        if overlap_total > 0:
+            raise RuntimeError("Grouped split is invalid because source-image overlap still exists between train/val/test.")
     
     # Lưu split manifest để reproduce exact split sau này
     split_manifest_path = save_split_manifest(
@@ -1256,7 +1518,15 @@ def main() -> None:
         "val_crops": len(val_records),
         "test_crops": len(test_records),
         "num_classes": len(class_ids),
+        "train_num_classes": len({int(record["label_id"]) for record in train_records}),
+        "val_num_classes": len({int(record["label_id"]) for record in val_records}),
+        "test_num_classes": len({int(record["label_id"]) for record in test_records}),
+        "train_unique_source_images": len({str(record.get("source_image_path") or record.get("image_path") or "") for record in train_records}),
+        "val_unique_source_images": len({str(record.get("source_image_path") or record.get("image_path") or "") for record in val_records}),
+        "test_unique_source_images": len({str(record.get("source_image_path") or record.get("image_path") or "") for record in test_records}),
         "deterministic": bool(args.deterministic),
+        "split_strategy": args.split_strategy,
+        "split_audit_path": str(args.output_dir / "split_audit.json"),
         "split_manifest": str(split_manifest_path),
         "data_roots": [str(root) for root in data_roots],
         "class_distribution": {str(label): count for label, count in Counter(int(r["label_id"]) for r in records).items()},
@@ -1266,6 +1536,27 @@ def main() -> None:
     print(f"Total pill crops: {len(records):,}", flush=True)
     print(f"Classes: {len(class_ids)}", flush=True)
     print(f"Split → train: {len(train_records):,}, val: {len(val_records):,}, test: {len(test_records):,}", flush=True)
+    print(
+        "Unique source images → "
+        f"train: {dataset_summary['train_unique_source_images']:,}, "
+        f"val: {dataset_summary['val_unique_source_images']:,}, "
+        f"test: {dataset_summary['test_unique_source_images']:,}",
+        flush=True,
+    )
+    print(
+        "Class coverage → "
+        f"train: {dataset_summary['train_num_classes']}, "
+        f"val: {dataset_summary['val_num_classes']}, "
+        f"test: {dataset_summary['test_num_classes']}",
+        flush=True,
+    )
+    print(
+        "Split overlap images -> "
+        f"train/val: {split_audit['train_val_overlap_images']}, "
+        f"train/test: {split_audit['train_test_overlap_images']}, "
+        f"val/test: {split_audit['val_test_overlap_images']}",
+        flush=True,
+    )
     print(f"Split manifest: {split_manifest_path}", flush=True)
     print(flush=True)
 
@@ -1366,6 +1657,16 @@ def main() -> None:
     # Compute class weights cho weighted loss (biased towards minority classes)
     class_weights = compute_class_weights(train_records, class_to_idx, power=args.class_weight_power).to(device)
     
+    manual_class_boosts = parse_manual_class_boosts(args.manual_class_boost)
+    if manual_class_boosts:
+        for label_id, factor in sorted(manual_class_boosts.items()):
+            if label_id not in class_to_idx:
+                print(f"Warning: manual class boost ignored because label {label_id} is absent from this split.", flush=True)
+                continue
+            idx = class_to_idx[label_id]
+            class_weights[idx] *= factor
+        class_weights = class_weights / class_weights.mean()
+    
     # Select loss based on argument
     if args.loss_type == "cross_entropy":
         criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
@@ -1374,7 +1675,7 @@ def main() -> None:
         criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.05)
     else:
         # Focal loss: focus on hard examples
-        criterion = FocalLoss(alpha=class_weights, gamma=args.focal_gamma, label_smoothing=0.02)
+        criterion = FocalLoss(alpha=class_weights, gamma=args.focal_gamma, label_smoothing=0.05)  # 🔴 INCREASED: 0.02→0.05
 
     # ========== TRAINING LOOP ==========
     history: Dict[str, List[float]] = {
@@ -1384,15 +1685,19 @@ def main() -> None:
         "val_acc": [],
         "train_top3_acc": [],
         "val_top3_acc": [],
+        "val_balanced_acc": [],
         "lr": [],
         "epoch_time_sec": [],
     }
 
     best_val_loss = float("inf")
+    best_balanced_acc = -float("inf")
     best_epoch = 0
     patience_counter = 0
     min_delta = 1e-4  # Minimum improvement to reset patience
     train_start = time.perf_counter()
+    best_balanced_model_path = args.output_dir / "best_balanced_model.pth"
+    best_model_path = args.output_dir / "best_model.pth"
 
     for epoch in range(1, args.epochs + 1):
         epoch_start = time.perf_counter()
@@ -1410,6 +1715,14 @@ def main() -> None:
         current_lr = optimizer.param_groups[0]["lr"]
         epoch_time = time.perf_counter() - epoch_start
 
+        # 🔴 TEMPORARY: Compute balanced_acc with error handling (can crash on some machines)
+        val_balanced_acc = None
+        try:
+            val_balanced_acc = compute_balanced_accuracy_on_loader(model, val_loader, device)
+        except Exception as e:
+            print(f" | ⚠️ balanced_acc computation failed: {e}")
+            val_balanced_acc = val_metrics["acc"]  # Fallback to regular accuracy
+
         # ========== HISTORY TRACKING ==========
         history["train_loss"].append(train_metrics["loss"])
         history["val_loss"].append(val_metrics["loss"])
@@ -1419,6 +1732,14 @@ def main() -> None:
         history["val_top3_acc"].append(val_metrics["top3_acc"])
         history["lr"].append(current_lr)
         history["epoch_time_sec"].append(epoch_time)
+        save_history_snapshot(
+            args.output_dir,
+            history,
+            best_epoch=best_epoch,
+            best_val_loss=best_val_loss,
+            total_train_time_sec=time.perf_counter() - train_start,
+            completed=False,
+        )
 
         gap = train_metrics["acc"] - val_metrics["acc"]
         print(
@@ -1431,31 +1752,47 @@ def main() -> None:
         )
 
         # ========== EARLY STOPPING LOGIC ==========
-        # Nếu val_loss giảm nhiều hơn min_delta
+        # 🔴 ROLLBACK: Use val_loss (balanced_acc monitoring was crashing)
+        # But keep higher patience=15 to prevent early stopping
         if val_metrics["loss"] < best_val_loss - min_delta:
+            # Improvement in validation loss - save checkpoint
             best_val_loss = val_metrics["loss"]
+            best_balanced_acc = val_balanced_acc if val_balanced_acc else val_metrics["acc"]
             best_epoch = epoch
             patience_counter = 0
             
             # Lưu checkpoint tốt nhất
-            torch.save(
-                checkpoint_payload(
-                    model=model,
-                    class_to_idx=class_to_idx,
-                    best_epoch=best_epoch,
-                    best_val_loss=best_val_loss,
-                    args=args,
-                    extra_metrics={"val_acc": val_metrics["acc"], "val_top3_acc": val_metrics["top3_acc"]},
-                ),
-                args.output_dir / "best_model.pth",
+            best_checkpoint = checkpoint_payload(
+                model=model,
+                class_to_idx=class_to_idx,
+                best_epoch=best_epoch,
+                best_val_loss=best_val_loss,
+                args=args,
+                extra_metrics={
+                    "val_acc": float(val_metrics["acc"]),
+                    "val_top3_acc": float(val_metrics["top3_acc"]),
+                    "val_balanced_acc": float(best_balanced_acc) if best_balanced_acc else None,
+                    "selection_metric": "val_loss (patience=15)",
+                },
             )
+            torch.save(best_checkpoint, best_model_path)
             print(" | saved best_model.pth", flush=True)
         else:
-            # No improvement, increment patience counter
+            # No improvement in validation loss, increment patience counter
             patience_counter += 1
-            print(f" | patience={patience_counter}/{args.patience}", flush=True)
-            if patience_counter >= args.patience:
-                print(f"Early stopping triggered at epoch {epoch}.", flush=True)
+            if epoch < args.min_epochs:
+                print(
+                    f" | patience={patience_counter}/{args.patience} | min_epochs_guard={epoch}/{args.min_epochs}",
+                    flush=True,
+                )
+            else:
+                print(f" | patience={patience_counter}/{args.patience}", flush=True)
+            if epoch >= args.min_epochs and patience_counter >= args.patience:
+                print(
+                    f"Early stopping triggered at epoch {epoch} after min_epochs={args.min_epochs} "
+                    f"(best epoch: {best_epoch}).",
+                    flush=True,
+                )
                 break
 
     total_train_time = time.perf_counter() - train_start
@@ -1474,7 +1811,8 @@ def main() -> None:
 
     # ========== FINAL EVALUATION ON TEST SET ==========
     # Load best checkpoint
-    best_checkpoint = torch.load(args.output_dir / "best_model.pth", map_location=device)
+    selected_best_path = best_balanced_model_path if best_balanced_model_path.exists() else best_model_path
+    best_checkpoint = torch.load(selected_best_path, map_location=device)
     model.load_state_dict(best_checkpoint["state_dict"])
     
     # Evaluate with detailed metrics (confusion matrix, per-class metrics)
@@ -1484,16 +1822,30 @@ def main() -> None:
     history_summary = {
         "best_epoch": best_epoch,
         "best_val_loss": best_val_loss,
+        "best_val_balanced_accuracy": float(best_balanced_acc) if math.isfinite(best_balanced_acc) else None,
         "best_val_accuracy": max(history["val_acc"]) if history["val_acc"] else 0.0,
         "final_train_accuracy": history["train_acc"][-1] if history["train_acc"] else 0.0,
         "final_val_accuracy": history["val_acc"][-1] if history["val_acc"] else 0.0,
+        "final_val_balanced_accuracy": history["val_balanced_acc"][-1] if history["val_balanced_acc"] else 0.0,
         "epochs_ran": len(history["train_loss"]),
         "total_train_time_sec": total_train_time,
         "avg_epoch_time_sec": float(np.mean(history["epoch_time_sec"])) if history["epoch_time_sec"] else 0.0,
+        "checkpoint_selection_metric": "balanced_accuracy",
     }
 
-    save_json(args.output_dir / "history.json", {**history, "summary": history_summary})
+    save_history_snapshot(
+        args.output_dir,
+        history,
+        best_epoch=best_epoch,
+        best_val_loss=best_val_loss,
+        total_train_time_sec=total_train_time,
+        completed=True,
+        test_metrics=test_metrics,
+        extra_summary=history_summary,
+    )
     save_json(args.output_dir / "test_metrics.json", test_metrics)
+    accuracy_diagnostics = build_accuracy_diagnostics(test_metrics, support_floor=5)
+    save_json(args.output_dir / "accuracy_diagnostics.json", accuracy_diagnostics)
     plot_training_curves(history, test_metrics, args.output_dir / "training_curves.png", best_epoch)
     plot_confusion_matrix(test_metrics, args.output_dir / "confusion_matrix.png", normalize=True)
 
@@ -1503,17 +1855,40 @@ def main() -> None:
     print("=" * 80, flush=True)
     print(f"Best epoch: {best_epoch}", flush=True)
     print(f"Best val loss: {best_val_loss:.4f}", flush=True)
+    if history_summary["best_val_balanced_accuracy"] is not None:
+        print(f"Best val balanced acc: {history_summary['best_val_balanced_accuracy']:.2%}", flush=True)
     print(f"Best val acc: {history_summary['best_val_accuracy']:.2%}", flush=True)
     print(f"Test acc: {float(test_metrics['accuracy']):.2%}", flush=True)
     print(f"Test top-3 acc: {float(test_metrics['top3_accuracy']):.2%}", flush=True)
     print(f"Test macro-F1: {float(test_metrics['macro_f1']):.2%}", flush=True)
+    if accuracy_diagnostics.get("balanced_accuracy") is not None:
+        print(f"Balanced acc: {float(accuracy_diagnostics['balanced_accuracy']):.2%}", flush=True)
+    if accuracy_diagnostics.get("median_recall") is not None:
+        print(f"Median class recall: {float(accuracy_diagnostics['median_recall']):.2%}", flush=True)
+    print(f"Accuracy verdict: {accuracy_diagnostics['verdict']}", flush=True)
+    for reason in list(accuracy_diagnostics.get("reasons", [])):
+        print(f"  - {reason}", flush=True)
+
+    zero_recall_classes = list(accuracy_diagnostics.get("zero_recall_classes", []))
+    if zero_recall_classes:
+        print("Zero-recall classes:", flush=True)
+        for item in zero_recall_classes[:10]:
+            support_text = (
+                f"support={item['support']}"
+                if item.get("support") is not None
+                else "support=unknown"
+            )
+            print(f"  label {item['label_id']}: {support_text}", flush=True)
+
     print(f"Training time: {total_train_time / 60:.1f} minutes", flush=True)
     print(flush=True)
     print("Saved files:", flush=True)
     print(f"  - {args.output_dir / 'best_model.pth'}", flush=True)
+    print(f"  - {best_balanced_model_path}", flush=True)
     print(f"  - {args.output_dir / 'final_model.pth'}", flush=True)
     print(f"  - {args.output_dir / 'history.json'}", flush=True)
     print(f"  - {args.output_dir / 'test_metrics.json'}", flush=True)
+    print(f"  - {args.output_dir / 'accuracy_diagnostics.json'}", flush=True)
     print(f"  - {args.output_dir / 'training_curves.png'}", flush=True)
     print(f"  - {args.output_dir / 'confusion_matrix.png'}", flush=True)
     print(f"  - {split_manifest_path}", flush=True)

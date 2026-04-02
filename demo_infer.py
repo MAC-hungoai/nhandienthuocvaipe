@@ -30,8 +30,11 @@ from knowledge_graph import (
 
 
 DEFAULT_DEMO_DETECTOR_CHECKPOINT = Path("checkpoints") / "detection_mnv3_hardmining_ft_v2" / "best_model.pth"
-DEFAULT_DEMO_CLASSIFIER_CHECKPOINT = Path("checkpoints") / "retrain_cgimif_s42_det8" / "best_model.pth"
+# Project-wide default classifier: keep app/demo/docs aligned on the clean
+# held-out test checkpoint stored at checkpoints/best_model.pth.
+DEFAULT_DEMO_CLASSIFIER_CHECKPOINT = Path("checkpoints") / "best_model.pth"
 DEFAULT_DEMO_OUTPUT_DIR = Path("checkpoints") / "demo_app_output"
+DEFAULT_APP_RESPONSE_IOU_THRESHOLD = 0.80
 
 
 def _decorate_label(label_id: int, label_display_names: Dict[int, str] | None) -> Dict[str, str]:
@@ -41,6 +44,46 @@ def _decorate_label(label_id: int, label_display_names: Dict[int, str] | None) -
         "label_name": label_name,
         "display_label": display_label,
     }
+
+
+def _box_iou(box_a: List[float], box_b: List[float]) -> float:
+    ax1, ay1, ax2, ay2 = [float(value) for value in box_a]
+    bx1, by1, bx2, by2 = [float(value) for value in box_b]
+
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    inter_w = max(0.0, inter_x2 - inter_x1)
+    inter_h = max(0.0, inter_y2 - inter_y1)
+    intersection = inter_w * inter_h
+
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - intersection
+    if union <= 0.0:
+        return 0.0
+    return float(intersection / union)
+
+
+def _suppress_overlapping_detections(
+    detections: List[Dict[str, object]],
+    iou_threshold: float = DEFAULT_APP_RESPONSE_IOU_THRESHOLD,
+) -> tuple[List[Dict[str, object]], int]:
+    kept: List[Dict[str, object]] = []
+    suppressed_count = 0
+
+    for item in sorted(detections, key=lambda detection: float(detection["score"]), reverse=True):
+        has_duplicate = any(
+            _box_iou(list(item["box_xyxy"]), list(existing["box_xyxy"])) >= iou_threshold
+            for existing in kept
+        )
+        if has_duplicate:
+            suppressed_count += 1
+            continue
+        kept.append(item)
+
+    return kept, suppressed_count
 
 
 def build_app_response(
@@ -87,12 +130,16 @@ def build_app_response(
             for item in payload.get("detections", [])
         ]
 
+    raw_num_detections = len(detections)
+    detections, suppressed_detections = _suppress_overlapping_detections(detections)
     overrides = [item for item in detections if bool(item["override_applied"])]
     top_labels: List[int] = [int(item["label_id"]) for item in detections]
     top_label_displays: List[str] = [str(item["display_label"]) for item in detections]
     return {
         "image_path": str(payload["image_path"]),
         "num_detections": len(detections),
+        "raw_num_detections": raw_num_detections,
+        "suppressed_detections": suppressed_detections,
         "num_overrides": len(overrides),
         "top_labels": top_labels,
         "top_label_displays": top_label_displays,
